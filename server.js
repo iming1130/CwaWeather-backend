@@ -8,7 +8,8 @@ const PORT = process.env.PORT || 3000;
 
 // CWA API 設定
 const CWA_API_BASE_URL = "https://opendata.cwa.gov.tw/api";
-const CWA_API_KEY = process.env.CWA_API_KEY;
+// 從環境變數讀取金鑰，如果未設定，則為空字串
+const CWA_API_KEY = process.env.CWA_API_KEY || ""; 
 
 // Middleware
 app.use(cors());
@@ -16,11 +17,10 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 /**
- * 取得高雄天氣預報
- * CWA 氣象資料開放平臺 API
- * 使用「一般天氣預報-今明 36 小時天氣預報」資料集
+ * 取得宜蘭縣的天氣預報 (F-D0047-091: 鄉鎮 3 小時預報)
+ * 此資料集包含 AT (體感溫度) 和 WS (風速) 等詳細資訊，適合您的單車應用。
  */
-const getKaohsiungWeather = async (req, res) => {
+const getYilanWeather = async (req, res) => {
   try {
     // 檢查是否有設定 API Key
     if (!CWA_API_KEY) {
@@ -30,87 +30,31 @@ const getKaohsiungWeather = async (req, res) => {
       });
     }
 
-    // 呼叫 CWA API - 一般天氣預報（36小時）
-    // API 文件: https://opendata.cwa.gov.tw/dist/opendata-swagger.html
+    const DATA_ID = "F-D0047-091"; // 鄉鎮 3 小時預報
+    const LOCATION = "宜蘭縣";
+
+    // 呼叫 CWA API
     const response = await axios.get(
-      `${CWA_API_BASE_URL}/v1/rest/datastore/F-C0032-001`,
+      `${CWA_API_BASE_URL}/v1/rest/datastore/${DATA_ID}`,
       {
         params: {
           Authorization: CWA_API_KEY,
-          locationName: "宜蘭縣",
+          locationName: LOCATION,
+          // 確保取得前端所需的全部要素
+          elementName: "AT,WS,PoP6h,PoP12h,Wx,MaxT,MinT" 
         },
       }
     );
 
-    // 取得高雄市的天氣資料
-    const locationData = response.data.records.location[0];
+    // 直接回傳 CWA 的原始 JSON 資料結構，讓前端自行解析。
+    // 這確保了您的前端解析邏輯 (parseCwaData) 能繼續使用。
+    res.json(response.data);
 
-    if (!locationData) {
-      return res.status(404).json({
-        error: "查無資料",
-        message: "無法取得高雄市天氣資料",
-      });
-    }
-
-    // 整理天氣資料
-    const weatherData = {
-      city: locationData.locationName,
-      updateTime: response.data.records.datasetDescription,
-      forecasts: [],
-    };
-
-    // 解析天氣要素
-    const weatherElements = locationData.weatherElement;
-    const timeCount = weatherElements[0].time.length;
-
-    for (let i = 0; i < timeCount; i++) {
-      const forecast = {
-        startTime: weatherElements[0].time[i].startTime,
-        endTime: weatherElements[0].time[i].endTime,
-        weather: "",
-        rain: "",
-        minTemp: "",
-        maxTemp: "",
-        comfort: "",
-        windSpeed: "",
-      };
-
-      weatherElements.forEach((element) => {
-        const value = element.time[i].parameter;
-        switch (element.elementName) {
-          case "Wx":
-            forecast.weather = value.parameterName;
-            break;
-          case "PoP":
-            forecast.rain = value.parameterName + "%";
-            break;
-          case "MinT":
-            forecast.minTemp = value.parameterName + "°C";
-            break;
-          case "MaxT":
-            forecast.maxTemp = value.parameterName + "°C";
-            break;
-          case "CI":
-            forecast.comfort = value.parameterName;
-            break;
-          case "WS":
-            forecast.windSpeed = value.parameterName;
-            break;
-        }
-      });
-
-      weatherData.forecasts.push(forecast);
-    }
-
-    res.json({
-      success: true,
-      data: weatherData,
-    });
   } catch (error) {
-    console.error("取得天氣資料失敗:", error.message);
+    console.error("取得宜蘭天氣資料失敗:", error.message);
 
     if (error.response) {
-      // API 回應錯誤
+      // CWA API 回應錯誤 (例如授權碼無效)
       return res.status(error.response.status).json({
         error: "CWA API 錯誤",
         message: error.response.data.message || "無法取得天氣資料",
@@ -129,11 +73,12 @@ const getKaohsiungWeather = async (req, res) => {
 // Routes
 app.get("/", (req, res) => {
   res.json({
-    message: "歡迎使用 CWA 天氣預報 API",
+    message: "歡迎使用 CWA 天氣預報 API 代理服務",
     endpoints: {
-      kaohsiung: "/api/weather/kaohsiung",
+      yilan: "/api/weather/yilan",
       health: "/api/health",
     },
+    note: "請確保 CWA_API_KEY 已在環境變數中設定。",
   });
 });
 
@@ -141,8 +86,38 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-// 取得高雄天氣預報
+// 新增並修正取得宜蘭天氣預報的路徑
+app.get("/api/weather/yilan", getYilanWeather);
+
+// 移除原本混亂的 /api/weather/kaohsiung 路由或將其修正為取得高雄資料。
+// 這裡將其修正為取得高雄資料，以保持原有的 Kaohsiung 路由功能。
+// 為了避免混淆，我們將 Kaohsiung 路由也改為使用 F-D0047 資料集，但查詢高雄市。
+const getKaohsiungWeather = async (req, res) => {
+  try {
+    if (!CWA_API_KEY) {
+      return res.status(500).json({ error: "伺服器設定錯誤", message: "請在 .env 檔案中設定 CWA_API_KEY" });
+    }
+    const DATA_ID = "F-D0047-071"; // 高雄市的 F-D0047 資料集 ID
+    const LOCATION = "高雄市";
+
+    const response = await axios.get(
+      `${CWA_API_BASE_URL}/v1/rest/datastore/${DATA_ID}`,
+      {
+        params: {
+          Authorization: CWA_API_KEY,
+          locationName: LOCATION,
+          elementName: "AT,WS,PoP6h,PoP12h,Wx,MaxT,MinT" 
+        },
+      }
+    );
+    res.json(response.data);
+  } catch (error) {
+    console.error("取得高雄天氣資料失敗:", error.message);
+    res.status(500).json({ error: "伺服器錯誤", message: "無法取得高雄天氣資料" });
+  }
+};
 app.get("/api/weather/kaohsiung", getKaohsiungWeather);
+
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -163,4 +138,5 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 伺服器運行已運作`);
   console.log(`📍 環境: ${process.env.NODE_ENV || "development"}`);
+  console.log(`📡 監聽 Port: ${PORT}`);
 });
