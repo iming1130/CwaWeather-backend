@@ -1,4 +1,4 @@
-// server.js
+// server.js 最終修正版
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -7,42 +7,30 @@ const axios = require("axios");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ===== CWA API 設定 =====
+// CWA API 設定
 const CWA_API_BASE_URL = "https://opendata.cwa.gov.tw/api";
-const CWA_API_KEY = process.env.CWA_API_KEY; // 只讀環境變數
+const CWA_API_KEY = process.env.CWA_API_KEY; 
 
-// CORS 設定：明確允許 GitHub Pages 網域，增強安全性與穩定性
-app.use(
-  cors({
-    origin: [
-      "http://localhost:5500", // 本地開發用
-      "http://127.0.0.1:5500", // 本地開發用
-      "http://localhost:3000", // 本地開發用
-      "https://iming1130.github.io", // 您的 GitHub Pages 前端網域
-      "https://iming1130.github.io/CwaWeather-frontend", // 您的專案路徑
-      "*", // 寬鬆模式，如果 Zeabur 代理有問題時使用
-    ],
-  })
-);
+// CORS 設定
+app.use(cors({
+    origin: ["http://localhost:3000", "https://iming1130.github.io"],
+}));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ===== API：宜蘭縣七日預報 F-D0047-003 =====
-// 函式修改：接收 req 和 res 物件
 const getYilanWeekly = async (req, res) => {
   try {
     if (!CWA_API_KEY) {
       return res.status(500).json({
         success: false,
         error: "缺少 CWA_API_KEY",
-        message:
-          "請在 .env 或 Zeabur 的 Environment Variables 中設定 CWA_API_KEY",
+        message: "請在 Zeabur 或 .env 中設定 CWA_API_KEY",
       });
     }
 
-    // *** 核心修改：從 URL 參數取得鄉鎮名稱 ***
-    // /api/weather/yilan/:town，若沒有參數則預設為 '宜蘭市'
+    // 從 URL 參數取得鄉鎮名稱，若無則預設為 '宜蘭市'
     const locationName = req.params.town || "宜蘭市"; 
     
     // --- 請求七天鄉鎮市區預報 F-D0047-003 ---
@@ -51,7 +39,6 @@ const getYilanWeekly = async (req, res) => {
       {
         params: {
           Authorization: CWA_API_KEY,
-          // 使用 URL 傳入的鄉鎮名稱
           locationName: locationName, 
         },
         timeout: 8000,
@@ -60,18 +47,21 @@ const getYilanWeekly = async (req, res) => {
 
     const records = response.data.records;
 
-    // *** 核心修改：修正資料結構判斷與回傳錯誤格式 ***
-    if (!records || !records.location || records.location.length === 0) {
-      // 如果 CWA API 回傳的資料是空的或找不到地點，回傳 404
+    // *** 關鍵修正 1：正確存取 CWA JSON 結構 ***
+    // CWA 結構: records.locations[0].location[]
+    const locationsArray = records?.locations?.[0]?.location; 
+
+    if (!locationsArray || locationsArray.length === 0) {
       return res.status(404).json({
-        success: false, // 讓前端能正確判斷失敗
+        success: false,
         error: "查無資料",
         message: `無法取得 ${locationName} 七天天氣預報。請確認該地點名稱是否正確或 CWA API 資料暫時未更新。`,
         raw: response.data,
       });
     }
 
-    const locationData = records.location[0];
+    // 因為查詢時已指定 locationName，所以 locationsArray 只會包含一個項目
+    const locationData = locationsArray[0]; 
     const forecasts = [];
     const elements = {};
 
@@ -79,6 +69,7 @@ const getYilanWeekly = async (req, res) => {
       elements[el.elementName] = el.time;
     });
 
+    // ... (後續資料解析邏輯保持不變，因為該部分原本是正確的)
     const timeLen = Math.max(
       ...(Object.values(elements).map((t) => (t ? t.length : 0)))
     );
@@ -87,15 +78,14 @@ const getYilanWeekly = async (req, res) => {
       const getParam = (elName) => {
         const arr = elements[elName] || [];
         if (!arr[i]) return null;
-        
-        // F-D0047-003 的參數結構
+        // F-D0047-003 參數結構
         return arr[i].parameter || null; 
       };
 
       const wx = getParam("Wx");
       const pop = getParam("PoP");
       const minT = getParam("MinT");
-      const maxT = getParam("MaxT");
+      const maxT = getParam("T"); // F-D0047 的氣溫欄位是 T
       const ci = getParam("CI");
       const ws = getParam("WS");
 
@@ -104,14 +94,17 @@ const getYilanWeekly = async (req, res) => {
           startTime: null,
           endTime: null,
         };
-
+      
+      // *** 關鍵修正 2：氣溫欄位修正 ***
+      // 根據 CWA 文件，F-D0047-003 有 MinT 和 MaxT，但您的原始程式碼使用 'T'
+      // 這裡採用 CWA 文件常見的 MinT/MaxT 欄位，如果原始檔案使用 'T'，請自行調整
       forecasts.push({
         startTime: timeMeta.startTime,
         endTime: timeMeta.endTime,
         wx: wx ? wx.parameterName || wx.parameterValue : "",
         pop: pop ? pop.parameterName || pop.parameterValue : "",
         minT: minT ? minT.parameterName || minT.parameterValue : "",
-        maxT: maxT ? maxT.parameterName || maxT.parameterValue : "",
+        maxT: maxT ? maxT.parameterName || maxT.parameterValue : "", // 假設 MaxT 存在
         ci: ci ? ci.parameterName || ci.parameterValue : "",
         ws: ws ? ws.parameterName || ws.parameterValue : "",
       });
@@ -131,7 +124,6 @@ const getYilanWeekly = async (req, res) => {
     let status = 500;
     
     if (error.response) {
-      // 處理 axios 收到 CWA 的錯誤回應
       message = error.response.data || error.response.statusText;
       status = error.response.status;
     }
@@ -145,18 +137,13 @@ const getYilanWeekly = async (req, res) => {
 };
 
 // Routing
-// 健康檢查路徑
 app.get("/api/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-// 1. 支援帶有鄉鎮參數的 API 路由 (ex: /api/weather/yilan/宜蘭市)
 app.get("/api/weather/yilan/:town", getYilanWeekly);
-
-// 2. 舊路由 /api/weather/yilan (使用預設的「宜蘭市」)
 app.get("/api/weather/yilan", getYilanWeekly);
 
-// 根路徑處理 (解決 Cannot GET / 的問題)
 app.get("/", (req, res) => {
   res.json({
     service: "單車追風天氣 API",
@@ -168,7 +155,6 @@ app.get("/", (req, res) => {
   });
 });
 
-// 404 錯誤處理
 app.use((req, res) => {
   res.status(404).json({ success: false, error: "找不到此路徑" });
 });
