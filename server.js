@@ -27,16 +27,18 @@ const getYilanWeekly = async (req, res) => {
       });
     }
 
-    const response = await axios.get(
-      `${CWA_API_BASE_URL}/v1/rest/datastore/F-C0032-003`,
-      {
-        params: {
-          Authorization: CWA_API_KEY,
-          locationName: "宜蘭縣",
-        },
-        timeout: 8000,
-      }
-    );
+    // --- 改用七天縣市預報 F-D0047-003 ---
+const response = await axios.get(
+  `${CWA_API_BASE_URL}/v1/rest/datastore/F-D0047-003`,
+  {
+    params: {
+      Authorization: CWA_API_KEY,
+      locationName: "宜蘭縣",
+    },
+    timeout: 8000,
+  }
+);
+
 
     const records = response.data.records;
     if (!records || !records.location || records.location.length === 0) {
