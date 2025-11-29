@@ -1,4 +1,4 @@
-// server.js 最終穩定版（請部署此版本）
+// server.js 縣市級穩定版 (請部署此版本)
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -19,7 +19,7 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ===== API：宜蘭縣七日預報 F-D0047-003 =====
+// ===== API：宜蘭縣三日預報 F-C0032-003 (最穩定) =====
 const getYilanWeekly = async (req, res) => {
   try {
     if (!CWA_API_KEY) {
@@ -30,17 +30,16 @@ const getYilanWeekly = async (req, res) => {
       });
     }
 
-    const locationName = req.params.town || "宜蘭市"; 
+    // F-C0032-003 資料集只接受縣市名稱
+    const countyName = "宜蘭縣"; 
     
-    // --- 請求七天鄉鎮市區預報 F-D0047-003 ---
-    // 注意：這裡不傳 locationName 參數，而是撈取所有宜蘭縣鄉鎮的資料，然後在後端篩選
+    // --- 請求三天縣市預報 F-C0032-003 ---
     const response = await axios.get(
-      `${CWA_API_BASE_URL}/v1/rest/datastore/F-D0047-003`,
+      `${CWA_API_BASE_URL}/v1/rest/datastore/F-C0032-003`, // <-- 切換資料集 ID
       {
         params: {
           Authorization: CWA_API_KEY,
-          // 移除 locationName 參數，讓 CWA 回傳該資料集支援的所有宜蘭縣鄉鎮資料
-          // 讓後端程式碼自己篩選，更穩定
+          locationName: countyName, 
         },
         timeout: 8000,
       }
@@ -48,71 +47,48 @@ const getYilanWeekly = async (req, res) => {
 
     const records = response.data.records;
 
-    // *** 關鍵修正：確保 records 存在，並取得 locations 陣列 ***
-    const allLocations = records?.locations?.[0]?.location; 
+    // F-C0032-003 結構：records.location[]
+    const locationData = records?.location?.[0]; 
 
-    if (!allLocations || allLocations.length === 0) {
-      // 如果連整個資料集都撈不到，表示 CWA API 或 Key 有問題
+    if (!locationData) {
       return res.status(404).json({
         success: false,
         error: "資料集錯誤",
-        message: "無法從 CWA 取得 F-D0047-003 資料集，請檢查 Key 或資料集是否有效。",
+        message: "無法從 CWA 取得 F-C0032-003 資料集，請檢查 Key 或資料集是否有效。",
         raw: response.data,
       });
     }
 
-    // *** 關鍵修正：在後端篩選出使用者選擇的鄉鎮 ***
-    const locationData = allLocations.find(loc => loc.locationName === locationName);
-    
-    if (!locationData) {
-        return res.status(404).json({
-            success: false,
-            error: "查無資料",
-            message: `F-D0047-003 資料集不包含 ${locationName} 的預報。`,
-            raw: records.locations[0].location.map(l => l.locationName),
-        });
-    }
-
-
     const forecasts = [];
     const elements = {};
-
+    
+    // 將所有天氣元素的時間陣列儲存在 elements 中
     locationData.weatherElement.forEach((el) => {
       elements[el.elementName] = el.time;
     });
 
-    const timeLen = Math.max(
-      ...(Object.values(elements).map((t) => (t ? t.length : 0)))
-    );
+    // 取得時間長度 (F-C0032-003 固定是 7 個時段)
+    const timeLen = elements['Wx'] ? elements['Wx'].length : 0;
 
     for (let i = 0; i < timeLen; i++) {
       
-      const getValue = (elName, paramIndex = 0) => {
+      const getValue = (elName, idx = 0) => {
         const timeArray = elements[elName];
-        if (!timeArray || !timeArray[i] || !timeArray[i].elementValue) return null;
+        if (!timeArray || !timeArray[i]) return null;
         
-        const elementValue = timeArray[i].elementValue[paramIndex];
-        return elementValue?.value || elementValue?.measures || null;
+        // F-C0032-003 的參數值在 parameter.parameterName
+        return timeArray[i].parameter[idx]?.parameterName || null;
       };
       
-      // 確保獲取描述文字，以便前端處理
-      const getDescription = (elName, paramIndex = 0) => {
-        const timeArray = elements[elName];
-        if (!timeArray || !timeArray[i] || !timeArray[i].elementValue) return null;
-        const elementValue = timeArray[i].elementValue[paramIndex];
-        return elementValue?.description || null;
-      };
-
       const timeMeta = elements["Wx"] ? elements["Wx"][i] : null;
 
-      // 數據欄位修正：T為氣溫，MinT/MaxT是最低/最高溫
-      const wx = getDescription("Wx", 0); // 天氣現象文字
-      const pop = getValue("PoP12h", 0); // 12小時降雨機率
+      const wx = getValue("Wx", 0); // 天氣現象
+      const pop = getValue("PoP", 0); // 降雨機率
       const minT = getValue("MinT", 0); // 最低溫
       const maxT = getValue("MaxT", 0); // 最高溫
-      const ci = getDescription("CI", 0); // 舒適度文字
+      const ci = getValue("CI", 0); // 舒適度
       const ws = getValue("WS", 0); // 風速
-      
+
       forecasts.push({
         startTime: timeMeta?.startTime ?? null,
         endTime: timeMeta?.endTime ?? null,
@@ -128,8 +104,8 @@ const getYilanWeekly = async (req, res) => {
     // 成功回傳
     res.json({
       success: true,
-      dataset: "F-D0047-003", 
-      city: locationData.locationName,
+      dataset: "F-C0032-003", 
+      city: countyName, // 回傳宜蘭縣
       updateTime: records.datasetDescription || records.datasetInfo || "",
       forecasts,
     });
@@ -156,14 +132,15 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-app.get("/api/weather/yilan/:town", getYilanWeekly);
+// 所有對鄉鎮的請求現在都會回傳宜蘭縣的數據
+app.get("/api/weather/yilan/:town", getYilanWeekly); 
 app.get("/api/weather/yilan", getYilanWeekly);
 
 app.get("/", (req, res) => {
   res.json({
     service: "單車追風天氣 API",
     endpoints: {
-      weekly: "/api/weather/yilan/:town",
+      weekly: "/api/weather/yilan/:town (現已切換至縣市級預報 F-C0032-003)",
     },
   });
 });
