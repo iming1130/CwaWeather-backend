@@ -1,4 +1,4 @@
-// server.js 縣市級穩定版 (請部署此版本)
+// server.js 最終穩定版 (將金鑰改為 Header 傳遞)
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -19,7 +19,7 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ===== API：宜蘭縣三日預報 F-C0032-003 (最穩定) =====
+// 使用最穩定的 F-C0032-003
 const getYilanWeekly = async (req, res) => {
   try {
     if (!CWA_API_KEY) {
@@ -30,64 +30,61 @@ const getYilanWeekly = async (req, res) => {
       });
     }
 
-    // F-C0032-003 資料集只接受縣市名稱
     const countyName = "宜蘭縣"; 
     
     // --- 請求三天縣市預報 F-C0032-003 ---
     const response = await axios.get(
-      `${CWA_API_BASE_URL}/v1/rest/datastore/F-C0032-003`, // <-- 切換資料集 ID
+      `${CWA_API_BASE_URL}/v1/rest/datastore/F-C0032-003`, 
       {
         params: {
-          Authorization: CWA_API_KEY,
           locationName: countyName, 
+        },
+        // *** 關鍵修正：將金鑰作為 Authorization Header 傳遞 ***
+        headers: {
+            'Authorization': CWA_API_KEY, 
         },
         timeout: 8000,
       }
     );
 
     const records = response.data.records;
-
-    // F-C0032-003 結構：records.location[]
     const locationData = records?.location?.[0]; 
 
+    // 檢查是否成功取得地點資料
     if (!locationData) {
+      // 如果仍然失敗，這次就是 CWA 服務端真正的問題
       return res.status(404).json({
         success: false,
-        error: "資料集錯誤",
-        message: "無法從 CWA 取得 F-C0032-003 資料集，請檢查 Key 或資料集是否有效。",
+        error: "CWA 服務器無資料",
+        message: "CWA API 服務器未回傳 F-C0032-003 資料，請稍後再試。",
         raw: response.data,
       });
     }
 
+    // [資料解析邏輯保持不變，因為 F-C0032-003 結構已在前面步驟確認]
     const forecasts = [];
     const elements = {};
-    
-    // 將所有天氣元素的時間陣列儲存在 elements 中
     locationData.weatherElement.forEach((el) => {
       elements[el.elementName] = el.time;
     });
 
-    // 取得時間長度 (F-C0032-003 固定是 7 個時段)
     const timeLen = elements['Wx'] ? elements['Wx'].length : 0;
 
     for (let i = 0; i < timeLen; i++) {
-      
       const getValue = (elName, idx = 0) => {
         const timeArray = elements[elName];
         if (!timeArray || !timeArray[i]) return null;
-        
-        // F-C0032-003 的參數值在 parameter.parameterName
         return timeArray[i].parameter[idx]?.parameterName || null;
       };
       
       const timeMeta = elements["Wx"] ? elements["Wx"][i] : null;
 
-      const wx = getValue("Wx", 0); // 天氣現象
-      const pop = getValue("PoP", 0); // 降雨機率
-      const minT = getValue("MinT", 0); // 最低溫
-      const maxT = getValue("MaxT", 0); // 最高溫
-      const ci = getValue("CI", 0); // 舒適度
-      const ws = getValue("WS", 0); // 風速
+      const wx = getValue("Wx", 0); 
+      const pop = getValue("PoP", 0); 
+      const minT = getValue("MinT", 0); 
+      const maxT = getValue("MaxT", 0); 
+      const ci = getValue("CI", 0); 
+      const ws = getValue("WS", 0); 
 
       forecasts.push({
         startTime: timeMeta?.startTime ?? null,
@@ -101,11 +98,10 @@ const getYilanWeekly = async (req, res) => {
       });
     }
 
-    // 成功回傳
     res.json({
       success: true,
       dataset: "F-C0032-003", 
-      city: countyName, // 回傳宜蘭縣
+      city: countyName, 
       updateTime: records.datasetDescription || records.datasetInfo || "",
       forecasts,
     });
@@ -127,15 +123,12 @@ const getYilanWeekly = async (req, res) => {
   }
 };
 
-// Routing 保持不變
+// [Routing 部分保持不變]
 app.get("/api/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
-
-// 所有對鄉鎮的請求現在都會回傳宜蘭縣的數據
 app.get("/api/weather/yilan/:town", getYilanWeekly); 
 app.get("/api/weather/yilan", getYilanWeekly);
-
 app.get("/", (req, res) => {
   res.json({
     service: "單車追風天氣 API",
@@ -144,12 +137,9 @@ app.get("/", (req, res) => {
     },
   });
 });
-
 app.use((req, res) => {
   res.status(404).json({ success: false, error: "找不到此路徑" });
 });
-
-// ===== 啟動伺服器 =====
 app.listen(PORT, () => {
   console.log(`🚴 API server running at port ${PORT}`);
 });
