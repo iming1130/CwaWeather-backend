@@ -1,17 +1,18 @@
-// server.js 最終修正版
+// server.js 最終修正版（專為 F-D0047-003 資料集優化）
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || process.env.ZEABUR_PORT || 3000;
 
 // CWA API 設定
 const CWA_API_BASE_URL = "https://opendata.cwa.gov.tw/api";
+// 從環境變數讀取金鑰，如 .env 或 Zeabur 設定
 const CWA_API_KEY = process.env.CWA_API_KEY; 
 
-// CORS 設定
+// CORS 設定：允許您的前端網域
 app.use(cors({
     origin: ["http://localhost:3000", "https://iming1130.github.io"],
 }));
@@ -30,7 +31,7 @@ const getYilanWeekly = async (req, res) => {
       });
     }
 
-    // 從 URL 參數取得鄉鎮名稱，若無則預設為 '宜蘭市'
+    // 取得鄉鎮名稱
     const locationName = req.params.town || "宜蘭市"; 
     
     // --- 請求七天鄉鎮市區預報 F-D0047-003 ---
@@ -47,8 +48,7 @@ const getYilanWeekly = async (req, res) => {
 
     const records = response.data.records;
 
-    // *** 關鍵修正 1：正確存取 CWA JSON 結構 ***
-    // CWA 結構: records.locations[0].location[]
+    // *** 關鍵修正 1：正確存取地點陣列 (records.locations[0].location) ***
     const locationsArray = records?.locations?.[0]?.location; 
 
     if (!locationsArray || locationsArray.length === 0) {
@@ -60,53 +60,50 @@ const getYilanWeekly = async (req, res) => {
       });
     }
 
-    // 因為查詢時已指定 locationName，所以 locationsArray 只會包含一個項目
+    // 因為查詢時已指定 locationName，所以 locationsArray 只會包含一組地點資料
     const locationData = locationsArray[0]; 
     const forecasts = [];
     const elements = {};
 
+    // 將所有天氣元素的時間陣列儲存在 elements 中
     locationData.weatherElement.forEach((el) => {
       elements[el.elementName] = el.time;
     });
 
-    // ... (後續資料解析邏輯保持不變，因為該部分原本是正確的)
+    // 找出最長的時間軸長度
     const timeLen = Math.max(
       ...(Object.values(elements).map((t) => (t ? t.length : 0)))
     );
 
+    // 遍歷時間軸並建立預報項目
     for (let i = 0; i < timeLen; i++) {
-      const getParam = (elName) => {
-        const arr = elements[elName] || [];
-        if (!arr[i]) return null;
-        // F-D0047-003 參數結構
-        return arr[i].parameter || null; 
+      
+      // *** 關鍵修正 2：氣象參數存取邏輯 (F-D0047-003 的特殊結構) ***
+      const getParamValue = (elName, paramIndex = 0) => {
+        const timeArray = elements[elName];
+        if (!timeArray || !timeArray[i] || !timeArray[i].elementValue) return null;
+        
+        const elementValue = timeArray[i].elementValue[paramIndex];
+        return elementValue?.value || elementValue?.measures || null;
       };
 
-      const wx = getParam("Wx");
-      const pop = getParam("PoP");
-      const minT = getParam("MinT");
-      const maxT = getParam("T"); // F-D0047 的氣溫欄位是 T
-      const ci = getParam("CI");
-      const ws = getParam("WS");
+      const timeMeta = elements["Wx"] ? elements["Wx"][i] : null;
+      const wx = getParamValue("Wx", 0); // 天氣現象
+      const pop = getParamValue("PoP12h", 0); // 12小時降雨機率
+      const minT = getParamValue("MinT", 0); // 最低溫
+      const maxT = getParamValue("MaxT", 0); // 最高溫
+      const ci = getParamValue("CI", 0); // 舒適度指數
+      const ws = getParamValue("WS", 0); // 風速
 
-      const timeMeta =
-        (elements["Wx"] && elements["Wx"][i]) || {
-          startTime: null,
-          endTime: null,
-        };
-      
-      // *** 關鍵修正 2：氣溫欄位修正 ***
-      // 根據 CWA 文件，F-D0047-003 有 MinT 和 MaxT，但您的原始程式碼使用 'T'
-      // 這裡採用 CWA 文件常見的 MinT/MaxT 欄位，如果原始檔案使用 'T'，請自行調整
       forecasts.push({
-        startTime: timeMeta.startTime,
-        endTime: timeMeta.endTime,
-        wx: wx ? wx.parameterName || wx.parameterValue : "",
-        pop: pop ? pop.parameterName || pop.parameterValue : "",
-        minT: minT ? minT.parameterName || minT.parameterValue : "",
-        maxT: maxT ? maxT.parameterName || maxT.parameterValue : "", // 假設 MaxT 存在
-        ci: ci ? ci.parameterName || ci.parameterValue : "",
-        ws: ws ? ws.parameterName || ws.parameterValue : "",
+        startTime: timeMeta?.startTime ?? null,
+        endTime: timeMeta?.endTime ?? null,
+        wx: wx,
+        pop: pop,
+        minT: minT,
+        maxT: maxT,
+        ci: ci,
+        ws: ws,
       });
     }
 
@@ -141,9 +138,13 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
+// 1. 支援帶有鄉鎮參數的 API 路由 (ex: /api/weather/yilan/宜蘭市)
 app.get("/api/weather/yilan/:town", getYilanWeekly);
+
+// 2. 舊路由 /api/weather/yilan (使用預設的「宜蘭市」)
 app.get("/api/weather/yilan", getYilanWeekly);
 
+// 根路徑處理
 app.get("/", (req, res) => {
   res.json({
     service: "單車追風天氣 API",
@@ -155,6 +156,7 @@ app.get("/", (req, res) => {
   });
 });
 
+// 404 錯誤處理
 app.use((req, res) => {
   res.status(404).json({ success: false, error: "找不到此路徑" });
 });
