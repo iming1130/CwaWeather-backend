@@ -1,4 +1,4 @@
-// server.js 最終優化版 (請部署此版本)
+// server.js 最終穩定版（請部署此版本）
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -33,12 +33,14 @@ const getYilanWeekly = async (req, res) => {
     const locationName = req.params.town || "宜蘭市"; 
     
     // --- 請求七天鄉鎮市區預報 F-D0047-003 ---
+    // 注意：這裡不傳 locationName 參數，而是撈取所有宜蘭縣鄉鎮的資料，然後在後端篩選
     const response = await axios.get(
       `${CWA_API_BASE_URL}/v1/rest/datastore/F-D0047-003`,
       {
         params: {
           Authorization: CWA_API_KEY,
-          locationName: locationName, 
+          // 移除 locationName 參數，讓 CWA 回傳該資料集支援的所有宜蘭縣鄉鎮資料
+          // 讓後端程式碼自己篩選，更穩定
         },
         timeout: 8000,
       }
@@ -46,19 +48,32 @@ const getYilanWeekly = async (req, res) => {
 
     const records = response.data.records;
 
-    // *** 關鍵修正：正確存取地點陣列 (records.locations[0].location) ***
-    const locationsArray = records?.locations?.[0]?.location; 
+    // *** 關鍵修正：確保 records 存在，並取得 locations 陣列 ***
+    const allLocations = records?.locations?.[0]?.location; 
 
-    if (!locationsArray || locationsArray.length === 0) {
+    if (!allLocations || allLocations.length === 0) {
+      // 如果連整個資料集都撈不到，表示 CWA API 或 Key 有問題
       return res.status(404).json({
         success: false,
-        error: "查無資料",
-        message: `無法取得 ${locationName} 七天天氣預報。請確認地點名稱是否正確或 CWA API 資料暫時未更新。`,
+        error: "資料集錯誤",
+        message: "無法從 CWA 取得 F-D0047-003 資料集，請檢查 Key 或資料集是否有效。",
         raw: response.data,
       });
     }
 
-    const locationData = locationsArray[0]; 
+    // *** 關鍵修正：在後端篩選出使用者選擇的鄉鎮 ***
+    const locationData = allLocations.find(loc => loc.locationName === locationName);
+    
+    if (!locationData) {
+        return res.status(404).json({
+            success: false,
+            error: "查無資料",
+            message: `F-D0047-003 資料集不包含 ${locationName} 的預報。`,
+            raw: records.locations[0].location.map(l => l.locationName),
+        });
+    }
+
+
     const forecasts = [];
     const elements = {};
 
@@ -70,31 +85,34 @@ const getYilanWeekly = async (req, res) => {
       ...(Object.values(elements).map((t) => (t ? t.length : 0)))
     );
 
-    // 遍歷時間軸並建立預報項目
     for (let i = 0; i < timeLen; i++) {
       
-      // *** 修正：精確存取 elementValue 的值，並處理缺失的欄位 ***
       const getValue = (elName, paramIndex = 0) => {
         const timeArray = elements[elName];
         if (!timeArray || !timeArray[i] || !timeArray[i].elementValue) return null;
         
-        // 嘗試從 elementValue 陣列中取出值
         const elementValue = timeArray[i].elementValue[paramIndex];
-        return elementValue?.value || elementValue?.measures || elementValue?.WeatherDescription || null;
+        return elementValue?.value || elementValue?.measures || null;
+      };
+      
+      // 確保獲取描述文字，以便前端處理
+      const getDescription = (elName, paramIndex = 0) => {
+        const timeArray = elements[elName];
+        if (!timeArray || !timeArray[i] || !timeArray[i].elementValue) return null;
+        const elementValue = timeArray[i].elementValue[paramIndex];
+        return elementValue?.description || null;
       };
 
       const timeMeta = elements["Wx"] ? elements["Wx"][i] : null;
 
-      // 由於 F-D0047-003 的欄位有時會被包裝在 WeatherDescription 中
-      // 這裡直接讀取原始欄位，如果沒有，前端的 render 函式會處理
-      const wx = getValue("Wx", 0);
-      const pop = getValue("PoP12h", 0); 
-      const minT = getValue("MinT", 0); 
-      const maxT = getValue("MaxT", 0); 
-      const ci = getValue("CI", 0);
-      const ws = getValue("WS", 0);
-      const weatherDesc = getValue("WeatherDescription", 0); // 獲取描述文字，用於 MinT/MaxT 不存在時的備援
-
+      // 數據欄位修正：T為氣溫，MinT/MaxT是最低/最高溫
+      const wx = getDescription("Wx", 0); // 天氣現象文字
+      const pop = getValue("PoP12h", 0); // 12小時降雨機率
+      const minT = getValue("MinT", 0); // 最低溫
+      const maxT = getValue("MaxT", 0); // 最高溫
+      const ci = getDescription("CI", 0); // 舒適度文字
+      const ws = getValue("WS", 0); // 風速
+      
       forecasts.push({
         startTime: timeMeta?.startTime ?? null,
         endTime: timeMeta?.endTime ?? null,
@@ -104,7 +122,6 @@ const getYilanWeekly = async (req, res) => {
         maxT: maxT,
         ci: ci,
         ws: ws,
-        weatherDesc: weatherDesc // 傳遞描述文字，以便前端處理
       });
     }
 
@@ -134,7 +151,7 @@ const getYilanWeekly = async (req, res) => {
   }
 };
 
-// Routing
+// Routing 保持不變
 app.get("/api/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
