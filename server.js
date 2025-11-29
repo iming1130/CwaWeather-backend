@@ -8,6 +8,7 @@ const PORT = process.env.PORT || 3000;
 
 // CWA API 設定
 const CWA_API_BASE_URL = "https://opendata.cwa.gov.tw/api";
+// 確保 CWA_API_KEY 變數存在
 const CWA_API_KEY = process.env.CWA_API_KEY || ""; 
 
 // Middleware
@@ -21,8 +22,9 @@ app.use(express.urlencoded({ extended: true }));
  * @param {string} locationName - 地點名稱 (例如: "宜蘭縣" 或 "高雄市")
  */
 const fetchCwaData = async (dataId, locationName) => {
+  // 檢查 API Key 是否設置
   if (!CWA_API_KEY) {
-    throw new Error("伺服器設定錯誤: 請在 .env 檔案中設定 CWA_API_KEY");
+    throw new Error("伺服器設定錯誤: 請在 .env 檔案中設定 CWA_API_KEY (或檢查 Zeabur 環境變數是否載入)");
   }
 
   const response = await axios.get(
@@ -37,12 +39,19 @@ const fetchCwaData = async (dataId, locationName) => {
     }
   );
   
-  // 檢查 CWA 回應是否包含錯誤訊息
+  // 檢查 CWA 回應是否包含錯誤訊息 (CWA 官方的回應)
   if (response.data.success === "false") {
-      throw new Error(response.data.message || "CWA API 請求失敗");
+    throw new Error(response.data.message || "CWA API 請求失敗 (CWA Success=false)");
+  }
+  
+  // *** 修正點：檢查是否有 'records' 屬性，這是判斷是否為實際資料的關鍵 ***
+  // 當 API Key 無效或參數錯誤時，CWA 可能會回傳 success=true 但只包含 metadata (result/fields)，導致前端解析失敗。
+  if (!response.data.records) {
+    console.error("CWA API 回應缺少 'records' 屬性。CWA 原始回應:", JSON.stringify(response.data, null, 2));
+    throw new Error("CWA API 呼叫失敗。請檢查 CWA_API_KEY 是否有效，以及請求參數是否正確。CWA 回傳了元數據而非實際資料。");
   }
 
-  // 回傳包含原始 CWA 資料的統一格式
+  // 成功取得資料
   return {
     success: "true",
     data: response.data 
@@ -57,6 +66,7 @@ const getYilanWeather = async (req, res) => {
     res.json(data);
   } catch (error) {
     console.error("取得宜蘭天氣資料失敗:", error.message);
+    // 嘗試使用 Axios 錯誤的回應狀態碼，否則使用 500
     const status = error.response ? error.response.status : 500;
     res.status(status).json({
       success: "false",
@@ -66,7 +76,7 @@ const getYilanWeather = async (req, res) => {
   }
 };
 
-// 取得高雄市天氣預報 (修正為使用 F-D0047 資料集)
+// 取得高雄市天氣預報
 const getKaohsiungWeather = async (req, res) => {
   try {
     const data = await fetchCwaData("F-D0047-071", "高雄市");
