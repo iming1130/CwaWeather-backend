@@ -9,105 +9,134 @@ const PORT = process.env.PORT || 3000;
 
 // ===== CWA API 設定 =====
 const CWA_API_BASE_URL = "https://opendata.cwa.gov.tw/api";
-const CWA_API_KEY = process.env.CWA_API_KEY; // 必須從 .env 取得
+const CWA_API_KEY = process.env.CWA_API_KEY; // 只讀環境變數
 
-// ===== CORS（必要！支援 GitHub Pages） =====
-app.use(cors({
-  origin: [
-    "http://localhost:5500",
-    "http://127.0.0.1:5500",
-    "http://localhost:3000",
-    "https://iming1130.github.io",
-  ],
-}));
-
+// Middleware
+app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ===== API：宜蘭縣七日預報 F-D0047-003 =====
+// ===== 宜蘭縣一週預報 =====
 const getYilanWeekly = async (req, res) => {
   try {
     if (!CWA_API_KEY) {
       return res.status(500).json({
         error: "缺少 CWA_API_KEY",
-        message: "請在 Zeabur 或 .env 中設定 CWA_API_KEY"
+        message:
+          "請在 .env 或 Zeabur 的 Environment Variables 中設定 CWA_API_KEY",
       });
     }
 
-    const response = await axios.get(
-      `${CWA_API_BASE_URL}/v1/rest/datastore/F-D0047-003`,
-      {
-        params: {
-          Authorization: CWA_API_KEY,
-          locationName: "宜蘭縣"
-        },
-        timeout: 10000,
-      }
-    );
+    // --- 改用七天縣市預報 F-D0047-003 ---
+const response = await axios.get(
+  `${CWA_API_BASE_URL}/v1/rest/datastore/F-D0047-003`,
+  {
+    params: {
+      Authorization: CWA_API_KEY,
+      locationName: "宜蘭縣",
+    },
+    timeout: 8000,
+  }
+);
+
 
     const records = response.data.records;
-    if (!records || !records.locations || records.locations.length === 0) {
+    if (!records || !records.location || records.location.length === 0) {
       return res.status(404).json({
         error: "查無資料",
-        raw: response.data
+        message: "無法取得宜蘭縣七天天氣預報",
+        raw: response.data,
       });
     }
 
-    // F-D0047-003 結構不同：locations → location (0) → weatherElement[]
-    const locationData = records.locations[0].location[0];
+    const locationData = records.location[0];
+    const forecasts = [];
     const elements = {};
-    locationData.weatherElement.forEach(el => {
+
+    locationData.weatherElement.forEach((el) => {
       elements[el.elementName] = el.time;
     });
 
-    const forecasts = [];
-
-    // 找出最大 time 陣列長度
     const timeLen = Math.max(
-      ...Object.values(elements).map(v => v.length)
+      ...(Object.values(elements).map((t) => (t ? t.length : 0)))
     );
 
     for (let i = 0; i < timeLen; i++) {
-      const get = (el) =>
-        elements[el] && elements[el][i]
-          ? elements[el][i].elementValue[0].value
-          : null;
+      const getParam = (elName) => {
+        const arr = elements[elName] || [];
+        if (!arr[i]) return null;
+        return arr[i].parameter || null;
+      };
 
-      const time = elements["Wx"] ? elements["Wx"][i] : null;
+      const wx = getParam("Wx");
+      const pop = getParam("PoP");
+      const minT = getParam("MinT");
+      const maxT = getParam("MaxT");
+      const ci = getParam("CI");
+      const ws = getParam("WS");
+
+      const timeMeta =
+        (elements["Wx"] && elements["Wx"][i]) || {
+          startTime: null,
+          endTime: null,
+        };
 
       forecasts.push({
-        startTime: time?.startTime ?? null,
-        endTime: time?.endTime ?? null,
-        wx: get("Wx"),
-        pop: get("PoP12h"),    // F-D0047 用 PoP12h
-        minT: get("TMin"),
-        maxT: get("TMax"),
-        ci: get("WeatherDescription"),
-        ws: get("WS"),         // 若沒有風速資料則顯示 null
+        startTime: timeMeta.startTime,
+        endTime: timeMeta.endTime,
+        wx: wx ? wx.parameterName || wx.parameterValue : "",
+        pop: pop ? pop.parameterName || pop.parameterValue : "",
+        minT: minT ? minT.parameterName || minT.parameterValue : "",
+        maxT: maxT ? maxT.parameterName || maxT.parameterValue : "",
+        ci: ci ? ci.parameterName || ci.parameterValue : "",
+        ws: ws ? ws.parameterName || ws.parameterValue : "",
       });
     }
 
     res.json({
       success: true,
+      dataset: "F-C0032-003",
       city: locationData.locationName,
+      updateTime: records.datasetDescription || records.datasetInfo || "",
       forecasts,
     });
-
-  } catch (err) {
-    console.error(err);
+  } catch (error) {
+    console.error("取得天氣資料失敗:", error.message);
+    if (error.response) {
+      return res.status(error.response.status).json({
+        error: "CWA API 錯誤",
+        message: error.response.data || error.response.statusText,
+      });
+    }
     res.status(500).json({
-      error: "CWA API 錯誤",
-      detail: err.response?.data || err.message,
+      error: "伺服器錯誤",
+      message: error.message,
     });
   }
 };
 
-app.get("/api/weather/yilan", getYilanWeekly);
-
+// Routing
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, time: new Date().toISOString() });
+  res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
+app.get("/api/weather/yilan", getYilanWeekly);
+
+app.get("/", (req, res) => {
+  res.json({
+    service: "單車追風天氣 API",
+    endpoints: {
+      weekly: "/api/weather/yilan",
+      health: "/api/health",
+    },
+  });
+});
+
+app.use((req, res) => {
+  res.status(404).json({ error: "找不到此路徑" });
+});
+
+// ===== 啟動伺服器 =====
 app.listen(PORT, () => {
-  console.log(`🚴 單車追風天氣後端啟動在 port ${PORT}`);
+  console.log(`🚴 單車追風天氣 API server running at port ${PORT}`);
 });
